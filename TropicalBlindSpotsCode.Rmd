@@ -1,0 +1,1542 @@
+---
+title: "TropicalBlindSpotsCode"
+output: html_document
+date: "2025-05-28"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(lattice)
+library(gstat)
+library(stats)
+library(sp)
+library(ggplot2)
+library(ggbreak)
+library(scales)
+library(tidyr)
+library(plotly)
+library(raster)
+library(dismo)
+library(sf)
+library(tidyverse)
+library(hrbrthemes)
+library(terra)
+library(RColorBrewer)
+library(cowplot)
+#PCA packages
+library(corrplot)
+library(factoextra) 
+library(FactoMineR)
+library(vegan)
+library(mgcv)
+library(ggrepel)
+library(caret)
+#netCDF packages
+library(ncdf4)
+library(CFtime)
+library(stars)
+library(here)
+library(cowplot)
+```
+
+##Locations 
+```{r}
+data_loc <- here("Data", "TBS_Datasets")
+pca_loc <- here("Data", "PCA")
+outputs_loc <- here("Outputs")
+averages_loc <- here("Outputs", "AvgRasters")
+modelsNat_loc <- here("Outputs", "Models_Nat")
+bnfrasters_loc <- here("Outputs", "AvgRasters", "BNF")
+rast_loc <- here("Data", "ClippedGloballyGridded")
+figure_loc <- here("Figures")
+model_nat_figure <- here("Figures", "Model_Natural")
+modeldata <- here("Data", "TRENDYN")
+ebf_loc <- here("Data", "ClippedGloballyGridded", "EBF")
+arid_loc <- here("Data", "ClippedGloballyGridded", "Arid")
+natural_loc <- here("Data", "ClippedGloballyGridded", "Natural")
+```
+
+##Data files 
+```{r}
+bnf <- read.csv(here(data_loc,'BNF_Sampled.csv'), header= TRUE)
+denit <- read.csv(here(data_loc,'Denitrification_Sampled.csv'), header= TRUE)
+```
+
+```{r}
+bnf.ebf <- bnf %>% filter(Biome_rough == "EBF")
+denit.ebf <- denit %>% filter(Biome_rough == "EBF")
+
+bnf.arid <- bnf %>%
+  filter(Biome_rough %in% c("Savannas", "Woody savannas", "Grassland"))
+denit.arid <- denit %>%
+  filter(Biome_rough %in% c("Savannas", "Woody savannas", "Grassland"))
+```
+
+###Expand to include repeat sampling
+```{r}
+bnf_expanded <- bnf %>%
+  uncount(weights = Number_of_sites)
+```
+
+```{r}
+bnf.ebf.ex <- bnf_expanded %>% filter(Biome_rough == "EBF")
+
+bnf.arid.ex <- bnf_expanded %>%
+  filter(Biome_rough %in% c("Savannas", "Woody savannas", "Grassland"))
+```
+
+
+
+
+##IGBP data
+
+```{r}
+igbp_rough_sample <- read.csv(here(data_loc, 'IGBP_Plot.csv'), header = TRUE)
+igbp_rough_repeats <- read.csv(here(data_loc, 'IGBP_Plot_repeats.csv'), header = TRUE)
+```
+
+
+
+
+
+###IGBP calculations with repeats 
+```{r}
+bnf %>%
+  group_by(Biome_rough) %>%
+  summarise(total_samples = sum(Number_of_sites, na.rm = TRUE))
+```
+
+
+```{r}
+denit %>%
+  group_by(Biome_rough) %>%
+  summarise(total_samples = sum(number_sites, na.rm = TRUE))
+```
+
+
+###IGBP Bubble chart
+```{r}
+df_long <- igbp_rough_repeats %>%
+  pivot_longer(
+    cols = c(Area_percent, Denit_percent, BNF_percent),
+    names_to = "Process",
+    values_to = "Percent"
+  ) %>%
+  # Optional: make nicer names for the legend
+  mutate(Process = recode(Process,
+                          "Area_percent" = "Area",
+                          "Denit_percent" = "Denitrification",
+                          "BNF_percent" = "BNF"))
+```
+
+
+
+```{r}
+max_percent <- df_long %>%
+  filter(Process %in% c("Denitrification", "BNF", "Area")) %>%
+  summarise(max_val = max(Percent, na.rm = TRUE)) %>%
+  pull(max_val)
+```
+
+
+```{r}
+##Denitrification only 
+df_plot <- df_long %>%
+  filter(Process %in% c("Area", "Denitrification")) %>%  # ignore BNF
+  mutate(
+    y_pos = 1  # fixed y position for all bubbles
+  )
+custom_order_pretty <- c(
+  "Savannas\nand \nShrublands",
+  "Grasslands",
+  "Evergreen \nBroadleaf \nForests",
+  "Deciduous \nBroadleaf \nForests",
+  "Barren",
+  "Mixed\nForests",
+  "Permanent \nWetlands\nand Coastal"
+
+)
+df_plot <- df_plot %>%
+  mutate(Biome = factor(Biome, levels = c(
+    "Savannas and Shrublands", "Grassland", "EBF", "DBF", "Barren", "Mixed Forests", "Permanent Wetlands and Coastal
+"
+  )))
+
+legend_breaks <- c(1, 15, 30)
+
+bubbles <- ggplot(df_plot, aes(x = Biome, size = Percent)) +
+
+  # 1️⃣ Denitrification FIRST (background)
+  geom_point(
+    data = df_plot %>% filter(Process == "Denitrification"),
+    aes(y = 0.85),
+    color = "blue",
+    alpha = 0.7
+  ) +
+
+  # 2️⃣ Area SECOND (on top, outline only)
+  geom_point(
+    data = df_plot %>% filter(Process == "Area"),
+    aes(y = 0.85),
+    shape = 21,          # circle that supports fill + outline
+    fill = NA,           # no fill
+    color = "grey",    # grey outline
+    stroke = 1.2,        # outline thickness
+    alpha = 1
+  ) +
+  scale_size_area(
+    max_size = 25,
+    limits = c(0, max_percent),  # <-- same as Denitrification
+    breaks = c(1, 15, 30),
+    labels = function(x) paste0(x, "%")
+  ) +
+  scale_color_manual(values = c(
+    "Area" = "grey",
+    "Denitrification" = "blue"
+  )) +
+  scale_x_discrete(labels = custom_order_pretty) +
+  scale_y_continuous(
+    breaks = NULL,  # hide y-axis
+    limits = c(0, max(df_plot$Percent) * 0.1)  # set upper limit slightly above bubbles
+  ) +
+  theme_minimal() +
+  theme(
+    axis.title.y = element_blank(),
+    panel.grid = element_blank(), 
+  legend.position.inside = c(0.5, -0.05),  # x, y
+    legend.justification = c(0.5, 0)
+  ) +
+  labs(size = "Proportional area \nor data coverage", color = "Process") +
+  guides(
+  size = guide_legend(
+    override.aes = list(
+      shape = 21,
+      fill = NA,
+      color = "grey",
+      stroke = 1.2
+    )
+  )
+)
+
+bubbles
+#ggsave(here(figure_loc, "IGBP_Bubbles_denit.png"), plot = bubbles, width = 8, height = 6, dpi = 300)
+```
+
+
+
+```{r}
+#BNF only 
+df_plot_bnf <- df_long %>%
+  filter(Process %in% c("Area", "BNF")) %>%  
+  mutate(
+    y_pos = 1  # fixed y position for all bubbles
+  )
+
+#custom_order_pretty <- c(
+ # "Savannas\nand \nShrublands \n(37.1%)",
+#  "Grassland \n(29.4%)",
+ # "Evergreen \nBroadleaf \nForests \n(28.1%)",
+  #"Deciduous \nBroadleaf \nForests \n(2.2%)",
+  #"Barren \n(1.3%)",
+  #"Mixed\nForests \n(1.1%)",
+  #"Permanent \nWetlands\nand Coastal \n(0.7%)"
+
+#)
+df_plot_bnf <- df_plot_bnf %>%
+  mutate(Biome = factor(Biome, levels = c(
+    "Savannas and Shrublands", "Grassland", "EBF", "DBF", "Barren", "Mixed Forests", "Permanent Wetlands and Coastal
+"
+  )))
+
+legend_breaks <- c(1, 25, 50)
+
+bubbles <- ggplot(df_plot_bnf, aes(x = Biome, size = Percent, color = Process)) +
+  # Plot "Area" first (underneath)
+  # 1️⃣ Denitrification FIRST (background)
+  geom_point(
+    data = df_plot_bnf %>% filter(Process == "BNF"),
+    aes(y = 0.85),
+    color = "red",
+    alpha = 0.7
+  ) +
+
+  # 2️⃣ Area SECOND (on top, outline only)
+  geom_point(
+    data = df_plot_bnf %>% filter(Process == "Area"),
+    aes(y = 0.85),
+    shape = 21,          # circle that supports fill + outline
+    fill = NA,           # no fill
+    color = "grey",    # grey outline
+    stroke = 1.2,        # outline thickness
+    alpha = 1
+  ) +
+  
+  scale_size_area(
+    max_size = 25,
+    limits = c(0, max_percent),  # <-- same as Denitrification
+    breaks = c(1, 15, 30),
+    labels = function(x) paste0(x, "%")
+  ) +
+  scale_color_manual(values = c(
+    "Area" = "grey",
+    "BNF" = "red"
+  )) +
+  scale_x_discrete(labels = custom_order_pretty) +
+  scale_y_continuous(
+    breaks = NULL,  # hide y-axis
+    limits = c(0, max(df_plot$Percent) * 0.1)  # set upper limit slightly above bubbles
+  ) +
+  theme_minimal() +
+  theme(
+    axis.title.y = element_blank(),
+    panel.grid = element_blank()  # remove all grid lines
+  ) +
+  labs(size = "Percent", color = "Process") +
+  guides(
+  size = guide_legend(
+    override.aes = list(
+      shape = 21,
+      fill = NA,
+      color = "grey",
+      stroke = 1.2
+    )
+  )
+)
+
+bubbles
+#ggsave(here(figure_loc, "IGBP_Bubbles_BNF_expanded.png"), plot = bubbles, width = 8, height = 6, dpi = 300)
+```
+
+
+
+
+
+
+###IGBP Bubbles repeats
+```{r}
+df_long <- igbp_rough_repeats %>%
+  pivot_longer(
+    cols = c(Area_percent, Denit_percent, BNF_percent),
+    names_to = "Process",
+    values_to = "Percent"
+  ) %>%
+  # Optional: make nicer names for the legend
+  mutate(Process = recode(Process,
+                          "Area_percent" = "Area",
+                          "Denit_percent" = "Denitrification",
+                          "BNF_percent" = "BNF"))
+```
+
+
+```{r}
+custom_order_pretty <- c(
+  "Savannas\nand \nShrublands \n(37.1%)",
+  "Grassland \n(29.4%)",
+  "Evergreen \nBroadleaf \nForests \n(28.1%)",
+  "Deciduous \nBroadleaf \nForests \n(2.2%)",
+  "Barren \n(1.3%)",
+  "Mixed\nForests \n(1.1%)",
+  "Permanent \nWetlands\nand Coastal \n(0.7%)"
+
+)
+df_long <- df_long %>%
+  mutate(Biome = factor(Biome, levels = c(
+    "Savannas and Shrublands", "Grassland", "EBF", "DBF", "Barren", "Mixed Forests", "Permanent Wetlands and Coastal
+"
+  )))
+# Define the representative values for the legend
+legend_breaks <- c(min(1), 
+                   median(30), 
+                   max(50))
+# Bubble plot
+plot <- ggplot(df_long, aes(x = Biome, y = Process, size = Percent, color = Process)) +
+  geom_point(alpha = 0.7) +
+  scale_size_area(max_size = 25, breaks = legend_breaks) +
+  scale_color_manual(values = c(
+    "Area" = "grey",            
+    "Denitrification" = "blue", 
+    "BNF" = "red"               
+  )) +
+  scale_x_discrete(labels = custom_order_pretty) +
+  theme_minimal() +
+  labs(size = "Percent", color = "Process") +
+  theme(axis.title.y = element_blank())
+
+plot
+#ggsave(here(figure_loc, "IGBP_Bubbles.png"), plot = plot, width = 8, height = 6, dpi = 300)
+```
+
+```{r}
+max_percent <- df_long %>%
+  filter(Process %in% c("Denitrification", "BNF", "Area")) %>%
+  summarise(max_val = max(Percent, na.rm = TRUE)) %>%
+  pull(max_val)
+```
+
+
+```{r}
+##Denitrification only 
+df_plot <- df_long %>%
+  filter(Process %in% c("Area", "Denitrification")) %>%  # ignore BNF
+  mutate(
+    y_pos = 1  # fixed y position for all bubbles
+  )
+custom_order_pretty <- c(
+  "Savannas\nand \nShrublands",
+  "Grasslands",
+  "Evergreen \nBroadleaf \nForests",
+  "Deciduous \nBroadleaf \nForests",
+  "Barren",
+  "Mixed\nForests",
+  "Permanent \nWetlands\nand Coastal"
+
+)
+df_plot <- df_plot %>%
+  mutate(Biome = factor(Biome, levels = c(
+    "Savannas and Shrublands", "Grassland", "EBF", "DBF", "Barren", "Mixed Forests", "Permanent Wetlands and Coastal
+"
+  )))
+
+legend_breaks <- c(1, 15, 30)
+
+bubbles <- ggplot(df_plot, aes(x = Biome, size = Percent)) +
+
+  # 1️⃣ Denitrification FIRST (background)
+  geom_point(
+    data = df_plot %>% filter(Process == "Denitrification"),
+    aes(y = 0.85),
+    color = "blue",
+    alpha = 0.7
+  ) +
+
+  # 2️⃣ Area SECOND (on top, outline only)
+  geom_point(
+    data = df_plot %>% filter(Process == "Area"),
+    aes(y = 0.85),
+    shape = 21,          # circle that supports fill + outline
+    fill = NA,           # no fill
+    color = "grey",    # grey outline
+    stroke = 1.2,        # outline thickness
+    alpha = 1
+  ) +
+  scale_size_area(
+    max_size = 25,
+    limits = c(0, max_percent),  # <-- same as Denitrification
+    breaks = c(1, 15, 30),
+    labels = function(x) paste0(x, "%")
+  ) +
+  scale_color_manual(values = c(
+    "Area" = "grey",
+    "Denitrification" = "blue"
+  )) +
+  scale_x_discrete(labels = custom_order_pretty) +
+  scale_y_continuous(
+    breaks = NULL,  # hide y-axis
+    limits = c(0, max(df_plot$Percent) * 0.1)  # set upper limit slightly above bubbles
+  ) +
+  theme_minimal() +
+  theme(
+    axis.title.y = element_blank(),
+    panel.grid = element_blank(), 
+  legend.position.inside = c(0.5, -0.05),  # x, y
+    legend.justification = c(0.5, 0)
+  ) +
+  labs(size = "Proportional area \nor data coverage", color = "Process") +
+  guides(
+  size = guide_legend(
+    override.aes = list(
+      shape = 21,
+      fill = NA,
+      color = "grey",
+      stroke = 1.2
+    )
+  )
+)
+
+bubbles
+#ggsave(here(figure_loc, "IGBP_Bubbles_denit.png"), plot = bubbles, width = 8, height = 6, dpi = 300)
+```
+
+
+
+```{r}
+#BNF only 
+df_plot_bnf <- df_long %>%
+  filter(Process %in% c("Area", "BNF")) %>%  
+  mutate(
+    y_pos = 1  # fixed y position for all bubbles
+  )
+
+#custom_order_pretty <- c(
+ # "Savannas\nand \nShrublands \n(37.1%)",
+#  "Grassland \n(29.4%)",
+ # "Evergreen \nBroadleaf \nForests \n(28.1%)",
+  #"Deciduous \nBroadleaf \nForests \n(2.2%)",
+  #"Barren \n(1.3%)",
+  #"Mixed\nForests \n(1.1%)",
+  #"Permanent \nWetlands\nand Coastal \n(0.7%)"
+
+#)
+df_plot_bnf <- df_plot_bnf %>%
+  mutate(Biome = factor(Biome, levels = c(
+    "Savannas and Shrublands", "Grassland", "EBF", "DBF", "Barren", "Mixed Forests", "Permanent Wetlands and Coastal
+"
+  )))
+
+legend_breaks <- c(1, 25, 50)
+
+bubbles <- ggplot(df_plot_bnf, aes(x = Biome, size = Percent, color = Process)) +
+  # Plot "Area" first (underneath)
+  # 1️⃣ Denitrification FIRST (background)
+  geom_point(
+    data = df_plot_bnf %>% filter(Process == "BNF"),
+    aes(y = 0.85),
+    color = "red",
+    alpha = 0.7
+  ) +
+
+  # 2️⃣ Area SECOND (on top, outline only)
+  geom_point(
+    data = df_plot_bnf %>% filter(Process == "Area"),
+    aes(y = 0.85),
+    shape = 21,          # circle that supports fill + outline
+    fill = NA,           # no fill
+    color = "grey",    # grey outline
+    stroke = 1.2,        # outline thickness
+    alpha = 1
+  ) +
+  
+  scale_size_area(
+    max_size = 25,
+    limits = c(0, max_percent),  # <-- same as Denitrification
+    breaks = c(1, 15, 30),
+    labels = function(x) paste0(x, "%")
+  ) +
+  scale_color_manual(values = c(
+    "Area" = "grey",
+    "BNF" = "red"
+  )) +
+  scale_x_discrete(labels = custom_order_pretty) +
+  scale_y_continuous(
+    breaks = NULL,  # hide y-axis
+    limits = c(0, max(df_plot$Percent) * 0.1)  # set upper limit slightly above bubbles
+  ) +
+  theme_minimal() +
+  theme(
+    axis.title.y = element_blank(),
+    panel.grid = element_blank()  # remove all grid lines
+  ) +
+  labs(size = "Percent", color = "Process") +
+  guides(
+  size = guide_legend(
+    override.aes = list(
+      shape = 21,
+      fill = NA,
+      color = "grey",
+      stroke = 1.2
+    )
+  )
+)
+
+bubbles
+#ggsave(here(figure_loc, "IGBP_Bubbles_BNF.png"), plot = bubbles, width = 8, height = 6, dpi = 300)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+##Citations
+```{r}
+citations <- read.csv(here(data_loc, 'Citations_Region.csv'), header = TRUE)
+```
+
+```{r}
+citations %>%
+  group_by(Region) %>%
+  summarise(n = n())
+```
+
+```{r}
+df <- citations %>%
+  group_by(Region) %>%
+  summarise(
+    count = n(),
+    total_value = sum(citations, na.rm = TRUE)
+  ) %>%
+  mutate(citationspersite = total_value / count)
+```
+
+```{r}
+ggplot(df, aes(x = Region, y = citationspersite)) +
+  geom_bar(stat = "identity", fill = "black") +
+  labs(x = "Region", y = "Citations normalized to number of studies") +
+  theme_minimal()
+```
+
+
+
+
+
+
+
+##Density Plots
+###Though shown here for phosphorous, code can be adapted for any single variable. 
+
+Soil Phosphorous
+```{r}
+SoilP <- raster(here(rast_loc,'SoilP_NoSahara.tif'))
+
+# plot raster data
+plot(SoilP,
+     main = "Soil P")
+```
+
+
+Convert raster values to data frame
+```{r}
+SoilP <- brick(here(rast_loc,'SoilP_NoSahara.tif'))
+```
+
+```{r}
+SoilP_df <- as.data.frame(rasterToPoints(SoilP,spatial = TRUE))
+head(SoilP_df)
+hist(SoilP_df$SoilP_NoSahara)
+```
+
+
+Density curves with lines indicating the peak (mode) of each population
+```{r}
+median_tropics <- median(SoilP_df$SoilP_NoSahara, na.rm = TRUE)
+median_bnf     <- median(bnf_expanded$soil_total_phosphorus_EX, na.rm = TRUE)
+median_denit   <- median(denit$Extracted_soil_total_phosphorus, na.rm = TRUE)
+
+# --- 2. Set axis limits and color palette ---
+x_axis_extent <- c(0, 1250)
+
+color_palette <- c(
+  "Tropics" = "grey",
+  "BNF data" = "red",
+  "Denitrification \ndata" = "blue"
+)
+
+# --- 3. Create the plot with density curves and vertical dashed lines ---
+p <- ggplot() +
+  geom_density(data = SoilP_df,
+      aes(x = SoilP_NoSahara,
+        fill = factor("Tropics", levels = names(color_palette))),
+    alpha = 0.35
+  ) +
+  geom_density(data = bnf_expanded, aes(x = soil_total_phosphorus_EX, fill = "BNF data"), alpha = 0.35) +
+  geom_density(data = denit, aes(x = Extracted_soil_total_phosphorus, fill = "Denitrification \ndata"), alpha = 0.35) +
+  
+  # Add vertical dashed lines at density peaks (modes)
+  geom_vline(xintercept = median_tropics, linetype = "dashed", color = "grey20", linewidth = 0.75) +
+  geom_vline(xintercept = median_bnf,     linetype = "dashed", color = color_palette["BNF data"], linewidth = 0.75) +
+  geom_vline(xintercept = median_denit,   linetype = "dashed", color = color_palette["Denitrification \ndata"], linewidth = 0.75) +
+
+  # Labels, theme, and scale adjustments
+  labs(title = "Tropics wide", x = expression("Soil P (mg kg"^{-1}*")"), y = "Density") +
+  theme_minimal() +
+  xlim(x_axis_extent) +
+  scale_fill_manual(values = color_palette, name = " ") +
+  theme(
+    legend.position = "none",
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.title = element_text(size = 20),
+    axis.text = element_text(size = 18),
+    axis.title.y = element_text(margin = margin(r = 15)),
+    plot.title = element_text(size = 22, face = "bold", hjust = 0.5)  # Change font size and make it bold
+  )
+
+# Show plot
+p
+#ggsave(here(figure_loc, "MedianDensity/SoilP_NoSahara_Density_expanded.png"), plot = p, width = 8, height = 6, dpi = 400)
+```
+
+
+
+###Density Plots - EBF
+
+```{r}
+SoilP <- raster(here(ebf_loc,'SoilP_EBFOnly.tif'))
+
+# plot raster data
+plot(SoilP,
+     main = "Soil P")
+```
+
+Convert raster values to data frame
+```{r}
+SoilP <- brick(here(ebf_loc,'SoilP_EBFOnly.tif'))
+```
+
+```{r}
+SoilP_df <- as.data.frame(rasterToPoints(SoilP,spatial = TRUE))
+head(SoilP_df)
+hist(SoilP_df$SoilP_EBFOnly)
+```
+
+
+```{r}
+median_tropics <- median(SoilP_df$SoilP_EBFOnly, na.rm = TRUE)
+median_bnf     <- median(bnf.ebf.ex$soil_total_phosphorus_EX, na.rm = TRUE)
+median_denit   <- median(denit.ebf$Extracted_soil_total_phosphorus, na.rm = TRUE)
+
+# --- 2. Set axis limits and color palette ---
+x_axis_extent <- c(0, 1250)
+
+color_palette <- c(
+  "EBFs" = "grey",
+  "BNF data" = "red",
+  "Denitrification \ndata" = "blue"
+)
+
+# --- 3. Create the plot with density curves and vertical dashed lines ---
+p <- ggplot() +
+  geom_density(
+    data = SoilP_df,
+    aes(x = SoilP_EBFOnly,
+        fill = factor("EBFs", levels = names(color_palette))),
+    alpha = 0.35
+  ) +
+  geom_density(data = bnf.ebf.ex, aes(x = soil_total_phosphorus_EX, fill = "BNF data"), alpha = 0.35) +
+  geom_density(data = denit.ebf, aes(x = Extracted_soil_total_phosphorus, fill = "Denitrification \ndata"), alpha = 0.35) +
+  
+  # Add vertical dashed lines at density peaks (modes)
+  geom_vline(xintercept = median_tropics, linetype = "dashed", color = "grey20", linewidth = 0.75) +
+  geom_vline(xintercept = median_bnf,     linetype = "dashed", color = color_palette["BNF data"], linewidth = 0.75) +
+  geom_vline(xintercept = median_denit,   linetype = "dashed", color = color_palette["Denitrification \ndata"], linewidth = 0.75) +
+
+  # Labels, theme, and scale adjustments
+  labs(title = "Within evergreen broadleaf forests", x = expression("Soil P (mg kg"^{-1}*")"), y = " ") +
+  theme_minimal() +
+  xlim(x_axis_extent) +
+  scale_fill_manual(values = color_palette, name = " ") +
+  theme(
+    legend.position = "none",
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.title = element_text(size = 20),
+    axis.text = element_text(size = 18),
+    plot.title = element_text(size = 22, face = "bold", hjust = 0.5)  # Change font size and make it bold
+  )
+
+# Show plot
+p
+#ggsave(here(figure_loc, "MedianDensity/SoilP_EBFOnly_Density_expanded.png"), plot = p, width = 8, height = 6, dpi = 400)
+```
+
+
+
+
+
+
+
+
+
+##Checking colinearity of environemntal factors
+
+```{r}
+#remove NA values and test for colinearity 
+ data[data==0] <- NA
+ data
+ 
+ raster_data_noZeros<-data[complete.cases(data),]
+
+
+# We can visually look for correlations between variables:
+heatmap(abs(cor(raster_data_noZeros)), 
+        # Compute pearson correlation (note they are absolute values)
+        col = rev(heat.colors(6)), 
+        Colv = NA, Rowv = NA)
+legend("topleft", 
+       title = "Absolute Pearson R",
+       legend =  round(seq(0,1, length.out = 6),1),
+       y.intersp = 0.7, bty = "n",
+       fill = rev(heat.colors(6)))
+```
+
+```{r}
+ #raster_data[raster_data==0] <- NA
+ #raster_data
+ 
+# raster_data_noZeros<-raster_data[complete.cases(raster_data),]
+
+# Prepare correlation matrix
+corr <- abs(cor(raster_data_noZeros))
+
+# Set layout: 1 row, 2 columns (plot + legend)
+layout(matrix(c(1, 2), nrow = 1), widths = c(4, 1))
+
+# Plot heatmap
+heatmap(corr, col = rev(heat.colors(6)), Colv = NA, Rowv = NA)
+
+# Plot empty area and draw legend
+par(mar = c(5, 1, 4, 4))
+plot.new()
+legend("center", 
+       title = "Abs Pearson R",
+       legend = round(seq(0, 1, length.out = 6), 1),
+       fill = rev(heat.colors(6)), 
+       bty = "n")
+```
+
+
+
+
+
+
+##Principal Component Analysis 
+only using those factors that have an absolute pearson R less than 0.8 
+```{r}
+data <- read.csv(here(data_loc,'RandPoints_ext.csv'), header= TRUE)
+data <- data %>% dplyr::select(-c(NEE, IGBP, GPP, Elevation, Roughness, SoilpH, PPT))
+
+data <- sapply( data, as.numeric, rm.na = TRUE)
+data <- as.data.frame(data)
+
+```
+
+```{r}
+for (col in 1:ncol(data)) {
+    hist(data[,col], main=colnames(data)[col],  xlab=colnames(data)[col])
+}
+```
+
+
+Normalizing values 
+```{r}
+
+
+#data$PPT <- (data$PPT) +0.001
+
+#data$PPT <- log(data$PPT)
+
+data$MAT <- (data$MAT) +0.001
+
+data$MAT <- log(data$MAT)
+
+#data$GPP <- (data$GPP) +0.001
+
+#data$GPP <- log(data$GPP)
+
+data$NPP <- (data$NPP) +0.001
+
+data$NPP <- log(data$NPP)
+
+data$Ndep2050 <- (data$Ndep2050) +0.001
+
+data$Ndep2050 <- log(data$Ndep2050)
+
+data$Slope <- (data$Slope) +0.001
+
+data$Slope <- log(data$Slope)
+
+#data$Elevation <- (data$Elevation) +0.001
+
+#data$Elevation <- log(data$Elevation)
+
+#data$Roughness <- (data$Roughness) +0.001
+
+#data$Roughness <- log(data$Roughness)
+
+data$SoilOC <- (data$SoilOC) +0.001
+
+data$SoilOC <- log(data$SoilOC)
+
+data$SoilN <- (data$SoilN) +0.001
+
+data$SoilN <- log(data$SoilN)
+
+data$SoilP <- (data$SoilP) +0.001
+
+data$SoilP <- log(data$SoilP)
+
+#data$SoilpH <- (data$SoilpH) +0.001
+
+#data$SoilpH <- log(data$SoilpH)
+
+data$DtB1 <- (data$DtB1) +0.1
+
+data$DtB1 <- log(data$DtB1)
+```
+
+```{r}
+for (col in 1:ncol(data)) {
+    hist(data[,col], main=colnames(data)[col],  xlab=colnames(data)[col])
+}
+```
+
+Based on QCBS vegan notes (https://r.qcbs.ca/workshop09/book-en/learning-objectives.html)
+FactoMineR documentation
+
+```{r}
+# Frist, normalize and then standardize your data (data previously normalized and labels removed)
+
+#soil_var.2 <- decostand(soil_var.2, "standardize")
+
+raster_data <- decostand(data, "standardize")
+```
+
+```{r}
+# Perform PCA with FactoMineR 
+# visualize with factoextra
+
+raster.pca <- FactoMineR::PCA(raster_data)
+ 
+summary(raster.pca)  
+
+  ## unknown scaling for the below plot
+```
+
+```{r}
+# Control variable colors using their contribution
+# Possible values for the argument col.var are :
+  # "cos2", "contrib", "coord", "x", "y"
+fviz_pca_var(raster.pca, col.var="contrib") +
+scale_color_gradient2(low="blue", mid="yellow", 
+                      high="orange", midpoint=5)+theme_bw()
+```
+
+```{r}
+raster.pca.plot <- factoextra::fviz_pca_biplot(raster.pca, # PCA object
+                axes = c(1, 2), # graph first two PCs
+                geom.ind = "point", # display trees as points
+                geom.var = c("arrow", "text"), # add arrows and text to variables
+                pointsize = 2, # increase size of tree points
+                labelsize = 6, # increase graph label font size
+                alpha = 0.5, # fade points/ellipses to read better
+                arrowsize = 1,
+                #habillage = as.factor(soil_samp$site), 
+                # habillage = as.factor(soil_clusters),
+                addEllipses = FALSE, # draw ellipses around groups (sites)
+                ellipse.level = 0.95,
+                #palette = pal3, # match palette with other plots
+                col.ind ="grey",
+                col.var = "blue", # make arrows/text of var black
+                ggrepel = TRUE, # avoid label overlap
+                mean.point = FALSE) + # remove site average point
+        theme(panel.grid = element_blank(),
+        legend.title = element_blank()) +
+  geom_text(aes(x= -5, y = 4), label = "", size = 4) +
+  theme(text = element_text(size = 17),
+        axis.title = element_text(size = 17),
+        axis.text = element_text(size = 17),
+        title = element_blank()) 
+
+raster.pca.plot
+
+# export plot to output folder
+
+#png("All_PCA_2024-4-09.png", height = 8, width = 12, unit = "in", res = 800)
+#print(raster.pca.plot)
+#dev.off()
+```
+
+```{r}
+# obtain correlation coefficients between variables and
+# PCs, and run a significance test on correlations
+
+FactoMineR::dimdesc(raster.pca, axes = c(1, 2, 3))
+    ## all variables are significantly correlated with PCS
+```
+```{r}
+loadings <- raster.pca$var$coord
+as.data.frame(loadings)
+
+file_path <- here(outputs_loc, file = "PCAloadings.csv")
+write.csv(loadings, file = file_path, row.names = FALSE)
+```
+
+
+```{r}
+## examine variables loadings for PCs
+## A reference dashed line is also shown on the barplot. 
+## This reference line corresponds to the expected value 
+## if the contribution where uniform. Bars above this dashed line are important contributors 
+
+fviz_contrib(raster.pca, choice = "var", axes = 1)
+fviz_contrib(raster.pca, choice = "var", axes = 2)
+fviz_contrib(raster.pca, choice = "var", axes = 3)  
+fviz_contrib(raster.pca, choice = "var", axes = 4) 
+
+# rm(soil.pca.plot, soil.pca)
+
+```
+
+```{r}
+
+# Kaiser Guttman criteria - select PCs that explain the more than
+# the average across all PCs
+
+ev <- raster.pca$eig[ ,1] # select eigenvalues for each variable
+barplot(ev)
+abline(h = mean(ev), col = "red3")
+legend("topright", "Average Eigenvalue", col = "red3")
+
+# useful information down to PC3
+
+```
+
+```{r}
+#Make a scree plot using base graphics : A scree plot is a graph of the eigenvalues/variances associated with components.
+eigenvalues <- raster.pca$eig
+barplot(eigenvalues[, 2], names.arg=1:nrow(eigenvalues), 
+       main = "Variances",
+       xlab = "Principal Components",
+       ylab = "Percentage of variances",
+       col ="steelblue")
+# Add connected line segments to the plot
+lines(x = 1:nrow(eigenvalues), eigenvalues[, 2], 
+      type="b", pch=19, col = "red")
+```
+
+##Reattaching locations and categorical variables to PC scores 
+```{r}
+pc_scores <- as.data.frame(raster.pca$ind$coord)
+```
+
+```{r}
+data2 <- read.csv(here(pca_loc, 'RandPoints_Ext_locations.csv'), header= TRUE)
+```
+
+```{r}
+with_loc <- merge(data2, pc_scores, by = 0)
+#write.csv(with_loc, file = "PCScores_noColinear_5-10-24.csv")
+```
+
+```{r}
+with_loc <- subset(with_loc, Dim.2 < 20, select = Row.names:Dim.5)
+```
+
+```{r}
+cols <- c("#F72424", "#0000FF", "#A0A0A050")
+ordered <- with_loc[order(with_loc$Type, decreasing = TRUE), ]
+
+points <- ggplot(ordered, aes(x = Dim.1, y = Dim.2, color = Type, order = Type)) +
+  geom_hline(yintercept = 0, linetype = "solid", linewidth = 1, colour = "black") +  # Bold zero horizontal line
+  geom_vline(xintercept = 0, linetype = "solid", linewidth = 1, colour = "black") +
+  geom_point() +
+  scale_color_manual(values = cols) + 
+  theme_bw()+
+  xlab("PC1 (41%)") + ylab("PC2 (14%)")+
+  theme(
+    legend.position = "none",
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.title = element_text(size = 16), # Adjust font size for axis titles
+    axis.text = element_text(size = 14),   # Adjust font size for axis text
+    legend.title = element_text(size = 14), # Legend title font size
+    legend.text = element_text(size = 12)   # Legend item font size
+  )
+   # Bold zero vertical line
+points
+
+#ggsave(here(figure_loc, "PC_Scores_PointsOver_NoLegend.png"), plot = points, width = 8, height = 6, dpi = 300)
+```
+
+```{r}
+# plot
+points.pca <- ggplot(ordered, aes(x = Dim.1, y = Dim.2, color = Type, order = Type)) +
+  geom_hline(yintercept = 0, linetype = "solid", linewidth = 1, colour = "black") +  # Bold zero horizontal line
+  geom_vline(xintercept = 0, linetype = "solid", linewidth = 1, colour = "black") +
+  geom_point() +
+  scale_color_manual(values = cols) + 
+  theme_bw()+
+  xlab("PC1 (41%)") + ylab("PC2 (14%)")+
+  theme(
+    legend.position = "none",
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.title = element_text(size = 16), # Adjust font size for axis titles
+    axis.text = element_text(size = 14),   # Adjust font size for axis text
+    legend.title = element_text(size = 14), # Legend title font size
+    legend.text = element_text(size = 12)   # Legend item font size
+  )
+
+# Add density curves to y and x axis
+#xdens <- 
+  #axis_canvas(points.pca, axis = "x") + 
+  #geom_density(data = ordered, aes(x = Dim.1, fill = Type, color = Type), alpha = 0.3)
+
+xdens <- 
+  axis_canvas(points.pca, axis = "x") + 
+  geom_density(data = ordered, 
+               aes(x = Dim.1, fill = Type, color = Type), 
+               alpha = 0.3) +
+  scale_fill_manual(values = cols) +
+  scale_color_manual(values = cols)
+
+ydens <-
+  axis_canvas(points.pca, axis = "y", coord_flip = TRUE) + 
+  geom_density(data = ordered, aes(x = Dim.2, fill = Type, color = Type), alpha = 0.3) +
+  coord_flip() +
+  scale_fill_manual(values = cols) +
+  scale_color_manual(values = cols)
+
+points.pca <- points.pca %>%
+  insert_xaxis_grob(xdens, grid::unit(1, "in"), position = "top") %>%
+  insert_yaxis_grob(ydens, grid::unit(1, "in"), position = "right") %>%
+  ggdraw()
+points.pca
+
+#ggsave(here(figure_loc, "PC_Scores_PointsOver_Density.png"), plot = points.pca, width = 8, height = 6, dpi = 400)
+```
+
+
+
+
+
+```{r}
+# plot
+points.pca <- ggplot(ordered, aes(x = Dim.1, y = Dim.3, color = Type, order = Type)) +
+  geom_hline(yintercept = 0, linetype = "solid", linewidth = 1, colour = "black") +  # Bold zero horizontal line
+  geom_vline(xintercept = 0, linetype = "solid", linewidth = 1, colour = "black") +
+  geom_point() +
+  scale_color_manual(values = cols) + 
+  theme_bw()+
+  xlab("PC1 (41%)") + ylab("PC3 (10.3%)")+
+  theme(
+    legend.position = "none",
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.title = element_text(size = 16), # Adjust font size for axis titles
+    axis.text = element_text(size = 14),   # Adjust font size for axis text
+    legend.title = element_text(size = 14), # Legend title font size
+    legend.text = element_text(size = 12)   # Legend item font size
+  )
+
+# Add density curves to y and x axis
+#xdens <- 
+  #axis_canvas(points.pca, axis = "x") + 
+  #geom_density(data = ordered, aes(x = Dim.1, fill = Type, color = Type), alpha = 0.3)
+
+xdens <- 
+  axis_canvas(points.pca, axis = "x") + 
+  geom_density(data = ordered, 
+               aes(x = Dim.1, fill = Type, color = Type), 
+               alpha = 0.3) +
+  scale_fill_manual(values = cols) +
+  scale_color_manual(values = cols)
+
+ydens <-
+  axis_canvas(points.pca, axis = "y", coord_flip = TRUE) + 
+  geom_density(data = ordered, aes(x = Dim.3, fill = Type, color = Type), alpha = 0.3) +
+  coord_flip() +
+  scale_fill_manual(values = cols) +
+  scale_color_manual(values = cols)
+
+points.pca <- points.pca %>%
+  insert_xaxis_grob(xdens, grid::unit(1, "in"), position = "top") %>%
+  insert_yaxis_grob(ydens, grid::unit(1, "in"), position = "right") %>%
+  ggdraw()
+points.pca
+
+ggsave(here(figure_loc, "PC_Scores_PointsOver_Density_OnevsThree.png"), plot = points.pca, width = 8, height = 6, dpi = 400)
+```
+
+
+
+
+
+
+##Generalized Additive Model (GAM)
+```{r}
+df <- read.csv(here(pca_loc,'RandPoints_Ext.csv'), header= TRUE)
+df$Slope <- as.numeric(df$Slope)
+df <- df %>% dplyr::select(-c(NEE, IGBP, GPP, Elevation, Roughness, SoilpH, PPT))
+```
+
+
+
+```{r}
+#read in data and standardize variables 
+numeric_columns <- sapply(df, is.numeric)
+df[numeric_columns] <- scale(df[numeric_columns])
+```
+
+```{r}
+#attach them to the presence/absence classification
+gam_data <- read.csv(here(pca_loc,"RandPoints_Ext_all_GAM_loc.csv"), header = TRUE)
+gam_data <- merge(gam_data, df, by = 0)
+gam_data <- gam_data %>% dplyr::select(-c(Row.names))
+```
+
+```{r}
+#remove NA rows 
+gam_data <- na.omit(gam_data)
+```
+
+```{r}
+hist(gam_data$PresAbs)
+```
+
+```{r}
+#try to downsample data 
+##Remove pres abs data rows first 
+# Specify the column and value to remove
+column_name <- "PresAbs"
+value_to_remove <- "1"
+
+# Separate the rows to be removed
+rows_to_remove <- gam_data[gam_data[[column_name]] == value_to_remove, ]
+
+# Data frame without the specified rows
+df_remaining <- gam_data[gam_data[[column_name]] != value_to_remove, ]
+```
+
+```{r}
+#actual downsample
+if (nrow(df_remaining) >= 10000) {
+  # Randomly sample 10,000 rows
+  sampled_df <- df_remaining[sample(nrow(df_remaining), 10000), ]
+} else {
+  stop("Not enough rows with the specified value to sample 10,000 rows.")
+}
+```
+
+```{r}
+#reattach 
+gam_data <- rbind(sampled_df, rows_to_remove)
+```
+
+Doing the GAM with 10,000 samples and considering potentially interesting variables: 
+```{r}
+gam_model<-gam(PresAbs~ s(SoilN) + s(SoilOC) + s(NPP+MAT) + s(Slope) + s(SoilP) + s(AET) + s(SoilMoisture) + s(Seasonality), family = binomial, data=gam_data, select = TRUE, method = "REML")
+#Then when you want to predict, you just:
+Gam_pred <- predict.gam(gam_model, newdata=gam_data, type="response")
+Gam_pred <- as.data.frame(Gam_pred)
+```
+
+
+```{r}
+summary(gam_model)$p.table
+```
+
+
+```{r}
+hist(Gam_pred$Gam_pred)
+```
+
+```{r}
+summary(gam_model)
+basic_summary <- summary(gam_model)
+#already cross validated 
+```
+
+```{r}
+gam.check(gam_model)
+```
+
+
+
+
+```{r}
+#Cross-validation
+# Perform k-fold cross-validation
+gam_data$PresAbs <- as.factor(gam_data$PresAbs)
+train_control <- trainControl(method = "cv",
+                              number = 10)
+cv_model <- train(PresAbs ~ SoilN+SoilOC+NPP+MAT+Slope+SoilP+DtB1+AET+SoilMoisture+Seasonality, data = gam_data, method = "gam", trControl = train_control)
+print(cv_model)
+```
+Accuracy indicates that the model did well to predict negative and positive values. Kapps indicates there is fair agreement, I think meaning that our model is 25% better than what would align only by chance. 
+
+
+Attaching the GAM results to locations
+```{r}
+gam_data <- merge(gam_data, Gam_pred, by = 0)
+gam_data <- gam_data %>% dplyr::select(-c(Row.names))
+```
+
+```{r}
+file_path <- here(data_loc, "Gam_10000_output.csv")
+write.csv(gam_data, file = file_path, row.names = FALSE)
+```
+
+
+
+##TRENDY-N Models 
+```{r}
+modeldata <- here("Data", "TRENDYN")
+CP_NMin <- rast(here(loc, "CABLE-POP/fNnetmin_annually.nc"))
+CLASSIC_NMin <- rast(here(loc,"CLASSIC/fNnetmin_annually.nc"))
+CLM5_NMin <- rast(here(loc,"CLM5.0/fNnetmin_annually.nc"))
+DLEM_NMin <- rast(here(loc,"DLEM/fNnetmin_annually.nc"))
+#ISAM_NMin <- rast(here(loc,"ISAM/fNnetmin_annually.nc"))
+JSBACH_NMin <- rast(here(loc,"JSBACH/fNnetmin_annually.nc"))
+JULES_ES_NMin <- rast(here(loc,"JULES-ES/fNnetmin_annually.nc"))
+LPJ_GUESS_NMin <- rast(here(loc,"LPJ-GUESS/fNnetmin_annually.nc"))
+LPX_Bern_NMin <- rast(here(loc,"LPX-Bern/fNnetmin_annually.nc"))
+OCNv2_NMin <- rast(here(loc,"OCNv2/fNnetmin_annually.nc"))
+ORCHIDEEv3_NMin <- rast(here(loc,"ORCHIDEEv3/fNnetmin_annually.nc"))
+```
+
+BNF - Run this block of code for each individual model, ensuring to change the name of the output file! 
+```{r}
+Classic_bnf_nc <- ncdf4::nc_open(here(modeldata, "CLASSIC/fBNF_annually.nc"))
+
+data_var <- ncvar_get(Classic_bnf_nc, "fBNF")
+time_var <- ncvar_get(Classic_bnf_nc, "time")
+
+lat <- ncvar_get(Classic_bnf_nc, "latitude")
+lon <- ncvar_get(Classic_bnf_nc, "longitude")
+
+nlat <- length(lat)
+nlon <- length(lon)
+ntime <- length(time_var)
+
+selected_time_steps <- c(150:170)
+
+rasters <- list()
+
+for (i in selected_time_steps) {
+  data_slice <- data_var[,,i]
+  r <- raster(t(data_slice), xmn=min(lon), xmx=max(lon), ymn=min(lat), ymx=max(lat), crs=CRS("+proj=longlat +datum=WGS84"))
+  rasters[[length(rasters) + 1]] <- r
+}
+
+raster_brick <- brick(rasters)
+
+average_raster <- calc(raster_brick, mean)
+
+
+##CONVERTS UNITS
+
+average_raster <- flip(average_raster, direction = 'y')
+average_raster <- terra::rotate(average_raster)
+average_raster_units <- average_raster*(3.1104e+10)
+plot(average_raster_units)
+#average_raster
+
+values(average_raster_units)
+
+# Define the output file path
+output_file <- here(bnfrasters_loc,"Classic_bnf_Avg.tif")
+
+# Write the adjusted average raster to a GeoTIFF file
+writeRaster(average_raster_units, output_file, format = "GTiff", overwrite = TRUE)
+
+```
+
+```{r}
+# List all raster files (e.g., .tif) in the folder
+raster_files <- list.files(BNF, pattern = "\\.tif$", full.names = TRUE)
+
+# Load and stack the rasters
+raster_stack <- rast(raster_files)  # This creates a SpatRaster with multiple layers
+```
+
+```{r}
+# Calculate the mean across the raster stack, removing NA values
+mean_raster <- app(spat_raster_stack, fun = function(x) mean(x, na.rm = TRUE))
+output_file <- here("Outputs", "Mean_TRENDYN_BNF.tif")
+writeRaster(mean_raster, output_file, filetype = "GTiff", overwrite = TRUE)
+
+
+# Calculate the standard deviation across the raster stack, removing NA values
+sd_raster <- app(spat_raster_stack, fun = function(x) sd(x, na.rm = TRUE))
+output_file <- here("Outputs","SD_TRENDYN_BNF.tif")
+writeRaster(sd_raster, output_file, overwrite = TRUE)
+
+# Calculate the coefficient of variation (CV)
+cv_raster <- sd_raster / mean_raster
+output_file <- here("Outputs","CV_TRENDYN_BNF.tif")
+writeRaster(cv_raster, output_file, overwrite = TRUE)
+
+# Plot the CV raster
+plot(sd_raster)
+```
+
+
+N loss - Run this block of code for each individual model, ensuring to change the name of the output file!
+```{r}
+#averages_loc_nloss <- here("Outputs", "AvgRasters", "Nloss")
+
+Classic_nloss_nc <- ncdf4::nc_open(here(loc, "ORCHIDEEv3/fNloss_annually.nc"))
+
+data_var <- ncvar_get(Classic_nloss_nc, "fNloss")
+time_var <- ncvar_get(Classic_nloss_nc, "time")
+
+lat <- ncvar_get(Classic_nloss_nc, "latitude")
+lon <- ncvar_get(Classic_nloss_nc, "longitude")
+
+nlat <- length(lat)
+nlon <- length(lon)
+ntime <- length(time_var)
+
+selected_time_steps <- c(150:170)
+
+rasters <- list()
+
+for (i in selected_time_steps) {
+  data_slice <- data_var[,,i]
+  r <- raster(t(data_slice), xmn=min(lon), xmx=max(lon), ymn=min(lat), ymx=max(lat), crs=CRS("+proj=longlat +datum=WGS84"))
+  rasters[[length(rasters) + 1]] <- r
+}
+
+raster_brick <- brick(rasters)
+
+average_raster <- calc(raster_brick, mean)
+
+
+
+
+average_raster <- flip(average_raster, direction = 'y')
+average_raster <- terra::rotate(average_raster)
+average_raster_units <- average_raster*(3.1104e+10)
+plot(average_raster_units)
+#average_raster
+
+values(average_raster_units)
+
+# Define the output file path
+output_file <- here(averages_loc_nloss,"ORCHIDEEv3_Nloss_Avg.tif")
+
+# Write the adjusted average raster to a GeoTIFF file
+writeRaster(average_raster_units, output_file, format = "GTiff", overwrite = TRUE)
+
+```
+
+```{r}
+# Calculate the mean across the raster stack, removing NA values
+mean_raster <- app(spat_raster_stack, fun = function(x) mean(x, na.rm = TRUE))
+output_file <- "Mean_TRENDYN_Nloss.tif"
+writeRaster(mean_raster, output_file, overwrite = TRUE)
+
+# Calculate the standard deviation across the raster stack, removing NA values
+sd_raster <- app(spat_raster_stack, fun = function(x) sd(x, na.rm = TRUE))
+output_file <- "SD_TRENDYN_Nloss.tif"
+writeRaster(sd_raster, output_file, overwrite = TRUE)
+
+# Calculate the coefficient of variation (CV)
+cv_raster <- sd_raster / mean_raster
+output_file <- "CV_TRENDYN_Nloss.tif"
+writeRaster(cv_raster, output_file, overwrite = TRUE)
+
+# Plot the sd raster
+plot(sd_raster)
+```
+
+
+
+
+
+##Plotting density curves with TRENDY data
+```{r}
+bnf <- read.csv(here(data_loc,'BNF_TRENDYN.csv'), header= TRUE)
+bnf_no_NA <- bnf %>% drop_na(Variance)
+
+denit <- read.csv(here(data_loc,'Nloss_TRENDYN.csv'), header= TRUE)
+denit_no_NA <- denit %>% drop_na(Variance)
+```
+
+```{r}
+#Natural
+#model_bnf <- raster(x = "CV_TRENDYN_BNF.tif")
+mean_bnf_nat <- brick(here(modelsNat_loc,"BNF_M_Nat.tif"))
+mean_bnf_nat_df <- as.data.frame(rasterToPoints(mean_bnf_nat,spatial = TRUE))
+```
+
+```{r}
+x_axis_extent <- c(0,7.5)
+
+# Specify the colors for each dataset
+color_palette <- c("BNF - Tropics" = "grey", "BNF - Sampled points" = "red")
+
+# Create density plots using ggplot2 with specified x-axis extent, colors, and legend
+p <- ggplot() +
+  geom_density(data = mean_bnf_nat_df, aes(x = BNF_M_Nat, fill = "BNF - Tropics"), alpha = 0.5) +
+  geom_density(data = bnf_no_NA, aes(x = Mean, fill = "BNF - Sampled points"), alpha = 0.5) +
+  labs(
+  x = expression("Mean BNF rate (kg N yr"^{-1}*")"),
+  y = "Density") +
+  theme_minimal() +
+  xlim(x_axis_extent) +
+  scale_fill_manual(values = color_palette, name = " ") +  # Set legend name and colors
+   theme(
+    legend.position = c(0.83, 0.86), # Adjust legend position
+    axis.title = element_text(size = 16), # Adjust font size for axis titles
+    axis.text = element_text(size = 14)   # Adjust font size for axis text
+  )
+p
+#ggsave("Mean_BNF_Clean.png", plot = p, width = 8, height = 6, dpi = 300)
+```
+
+```{r}
+# --- 1. Calculate modes (peak positions) for each group ---
+# Remove NAs if needed
+median_nat <- median(mean_bnf_nat_df$BNF_M_Nat, na.rm = TRUE)
+median_bnf     <- median(bnf_no_NA$Mean, na.rm = TRUE)
+
+# --- 2. Set axis limits and color palette ---
+x_axis_extent <- c(0, 4.5)
+
+color_palette <- c(
+  "BNF - Tropics" = "grey",
+  "BNF - Sampled points" = "red"
+)
+
+# --- 3. Create the plot with density curves and vertical dashed lines ---
+p <- ggplot() +
+  geom_density(data = mean_bnf_nat_df, aes(x = BNF_M_Nat, color = "BNF - Tropics"), linewidth = 1.5) +
+  geom_density(data = bnf_no_NA, aes(x = Mean, color = "BNF - Sampled points"), linewidth = 1.5) +
+  
+  # Add vertical dashed lines at density peaks (modes)
+  geom_vline(xintercept = median_nat, linetype = "dashed", color = color_palette["BNF - Tropics"], linewidth = 0.75) +
+  geom_vline(xintercept = median_bnf,     linetype = "dashed", color = color_palette["BNF - Sampled points"], linewidth = 0.75) +
+
+  # Labels, theme, and scale adjustments
+  labs(
+    x = expression("g N m"^{-2}*" yr"^{-1}*""),
+    #x = " ",
+    y = "Density") +
+  theme_minimal() +
+  xlim(x_axis_extent) +
+  ylim(0, 0.675) +  # Lock y-axis extent
+  scale_color_manual(values = color_palette, name = " ") +
+  theme(
+    legend.position = "none",
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.text = element_text(size = 14),            # Increase legend text size
+    legend.key.size = unit(1.0, "cm"),                # Make legend boxes larger
+    axis.title = element_text(size = 25),
+    axis.line = element_line(color = "black"),
+    axis.text = element_text(size = 25),
+    plot.title = element_text(size = 18, face = "bold", hjust = 0.5)
+  )
+
+# Show plot
+p
+#ggsave(here(figure_loc, "MeanBNFRate_Density_Natural_empty.png"), plot = p, width = 8, height = 6, dpi = 400)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

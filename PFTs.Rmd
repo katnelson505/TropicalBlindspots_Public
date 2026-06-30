@@ -1,0 +1,1201 @@
+---
+title: "PFTs"
+output: html_document
+date: "2026-03-04"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(lattice)
+library(gstat)
+library(stats)
+library(sp)
+library(ggplot2)
+library(ggbreak)
+library(scales)
+library(tidyr)
+library(plotly)
+library(raster)
+library(dismo)
+library(sf)
+library(tidyverse)
+library(hrbrthemes)
+library(terra)
+library(RColorBrewer)
+library(cowplot)
+#PCA packages
+library(corrplot)
+library(factoextra) 
+library(FactoMineR)
+library(vegan)
+library(mgcv)
+library(ggrepel)
+library(caret)
+#netCDF packages
+library(ncdf4)
+library(CFtime)
+library(stars)
+library(here)
+library(cowplot)
+```
+
+
+##Locations 
+```{r}
+data_loc <- here("Data", "TBS_Datasets")
+pca_loc <- here("Data", "PCA")
+outputs_loc <- here("Outputs")
+averages_loc <- here("Outputs", "AvgRasters")
+modelsNat_loc <- here("Outputs", "Models_Nat")
+bnfrasters_loc <- here("Outputs", "AvgRasters", "BNF")
+rast_loc <- here("Data", "ClippedGloballyGridded")
+figure_loc <- here("Figures")
+
+model_nat_figure <- here("Figures", "Model_Natural")
+modeldata <- here("Data", "TRENDYN")
+
+ebf_loc <- here("Data", "ClippedGloballyGridded", "EBF")
+arid_loc <- here("Data", "ClippedGloballyGridded", "Arid")
+natural_loc <- here("Data", "ClippedGloballyGridded", "Natural")
+
+landcover_loc <- here("Data", "LandCover")
+```
+
+
+
+
+##CLASSIC
+
+```{r}
+Classic_landCoverFrac <- ncdf4::nc_open(here(landcover_loc, "CLASSIC_S0_landCoverFrac.nc"))
+Classic_landCoverFrac
+```
+```{r}
+names(Classic_landCoverFrac$var)
+```
+
+###Find the structire within our variable of interest. In this case it's longitude (360) × latitude (180) × PFT (10) × time (320)
+```{r}
+Classic_landCoverFrac$var[["landCoverFrac"]]$dim
+```
+
+###Extract only PFT 3 (EBF)
+```{r}
+var <- ncvar_get(Classic_landCoverFrac, "landCoverFrac",
+                 start = c(1, 1, 3, 1),
+                 count = c(-1, -1, 1, -1))
+```
+
+###Extract our dates of interest, 2000 to 2020
+```{r}
+time <- ncvar_get(Classic_landCoverFrac, "time")
+dates <- as.Date(time, origin = "1700-12-31")
+```
+
+```{r}
+time_idx <- which(year(dates) >= 2000 & year(dates) <= 2020)
+var_subset <- var[ , , time_idx]
+```
+
+###Average fraction values over time
+```{r}
+mean_pft3 <- apply(var_subset, c(1, 2), mean, na.rm = TRUE)
+```
+
+###Rasterize
+```{r}
+lon <- ncvar_get(Classic_landCoverFrac, "longitude")
+lat <- ncvar_get(Classic_landCoverFrac, "latitude")
+
+r <- rast(t(mean_pft3))
+ext(r) <- c(min(lon), max(lon), min(lat), max(lat))
+crs(r) <- "EPSG:4326"
+
+# Fix orientation (very likely needed)
+r <- flip(r, direction = "vertical")
+
+plot(r)
+```
+
+
+###Convert to areas:
+```{r}
+# area of each pixel in km²
+#Terra accounts for the curvature of the earth doing it this way
+cell_area <- cellSize(r, unit = "km")
+```
+
+```{r}
+pft3_area <- r * cell_area
+```
+
+```{r}
+plot(pft3_area)
+```
+
+###Check to make sure fraction is 0-1
+```{r}
+minmax(r)
+```
+
+```{r}
+output_file <- here(outputs_loc,"PFTMaps", "Classic_EBFPFT.tif")
+
+writeRaster(pft3_area, output_file, overwrite = TRUE)
+```
+
+###Total area
+```{r}
+total_area_km2 <- global(pft3_area, fun = "sum", na.rm = TRUE)
+total_area_km2
+```
+
+###Total area of the tropics
+
+```{r}
+lat_r <- init(r, "y")
+```
+
+```{r}
+tropics <- lat_r >= -23.5 & lat_r <= 23.5
+```
+
+```{r}
+r2 <- r[[1]]   # or mean/any single timestep
+land_mask <- r2 > 0
+```
+
+```{r}
+cell_area <- cellSize(r2, unit = "km")
+```
+
+```{r}
+tropical_land_area <- cell_area * tropics * land_mask
+```
+
+```{r}
+total <- global(tropical_land_area, "sum", na.rm = TRUE)
+total
+```
+
+
+###Find the area of the productive tropics - from the GPP mask 
+```{r}
+NPP_nat <- rast("/Users/katienelson/Documents/GitHub/TropicalBlindspots/Data/ClippedGloballyGridded/Natural/NPP_Nat_test.tif")
+```
+
+```{r}
+cell_area <- cellSize(NPP_nat, unit = "km")
+
+# Keep only cells with non-zero values
+nonzero_area <- ifel(NPP_nat != 0 & !is.na(NPP_nat), cell_area, NA)
+
+# Sum total area
+total_area_km2 <- global(nonzero_area, "sum", na.rm = TRUE)
+
+print(total_area_km2)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+##CLM EBF
+
+```{r}
+CLM_landCoverFrac <- ncdf4::nc_open(here(landcover_loc, "CLM5.0_S0_landCoverFrac_PFT04.nc"))
+CLM_landCoverFrac
+```
+
+```{r}
+names(CLM_landCoverFrac$var)
+```
+
+###Find the structire within our variable of interest. In this case it's longitude (360) × latitude (180) × PFT (10) × time (320)
+```{r}
+CLM_landCoverFrac$var[["landCoverFrac"]]$dim
+```
+
+###Dont need to extract a PFT, already done within the file
+
+```{r}
+time <- ncvar_get(CLM_landCoverFrac, "time")
+dates <- as.Date(time, origin = "1701-01-01")
+
+time_idx <- which(lubridate::year(dates) >= 2000 &
+                  lubridate::year(dates) <= 2020)
+
+var_subset <- var[time_idx, , ]
+```
+
+
+###Average fraction values over time
+```{r}
+mean_map <- apply(var_subset, c(2,3), mean, na.rm = TRUE)
+```
+
+###Rasterize
+```{r}
+lon <- ncvar_get(CLM_landCoverFrac, "lon")
+lat <- ncvar_get(CLM_landCoverFrac, "lat")
+
+r <- rast(t(mean_map))
+ext(r) <- c(min(lon), max(lon), min(lat), max(lat))
+crs(r) <- "EPSG:4326"
+
+# Fix orientation (very likely needed)
+r <- flip(r, direction = "vertical")
+
+plot(r)
+```
+
+
+###Convert to areas:
+```{r}
+# area of each pixel in km²
+#Terra accounts for the curvature of the earth doing it this way
+cell_area <- cellSize(r, unit = "km")
+```
+
+```{r}
+pft_area <- r * cell_area
+```
+
+```{r}
+plot(pft_area)
+```
+
+###Check to make sure fraction is 0-1
+```{r}
+minmax(r)
+```
+
+```{r}
+output_file <- here(outputs_loc,"PFTMaps", "CLM5_EBFPFT.tif")
+
+writeRaster(pft_area, output_file, overwrite = TRUE)
+```
+
+###Total area
+```{r}
+total_area_km2 <- global(pft_area, fun = "sum", na.rm = TRUE)
+total_area_km2
+```
+
+
+###CLM EDF OVERWRITES
+
+```{r}
+CLM_landCoverFrac <- ncdf4::nc_open(here(landcover_loc, "CLM5.0_S0_landCoverFrac_PFT06.nc"))
+CLM_landCoverFrac
+```
+
+```{r}
+names(CLM_landCoverFrac$var)
+```
+
+###Find the structire within our variable of interest. In this case it's longitude (360) × latitude (180) × PFT (10) × time (320)
+```{r}
+CLM_landCoverFrac$var[["landCoverFrac"]]$dim
+```
+
+###Dont need to extract a PFT, already done within the file
+
+```{r}
+time <- ncvar_get(CLM_landCoverFrac, "time")
+dates <- as.Date(time, origin = "1701-01-01")
+
+time_idx <- which(lubridate::year(dates) >= 2000 &
+                  lubridate::year(dates) <= 2020)
+
+var_subset <- var[time_idx, , ]
+```
+
+
+###Average fraction values over time
+```{r}
+mean_map <- apply(var_subset, c(2,3), mean, na.rm = TRUE)
+```
+
+###Rasterize
+```{r}
+lon <- ncvar_get(CLM_landCoverFrac, "lon")
+lat <- ncvar_get(CLM_landCoverFrac, "lat")
+
+r <- rast(t(mean_map))
+ext(r) <- c(min(lon), max(lon), min(lat), max(lat))
+crs(r) <- "EPSG:4326"
+
+# Fix orientation (very likely needed)
+r <- flip(r, direction = "vertical")
+
+plot(r)
+```
+
+
+###Convert to areas:
+```{r}
+# area of each pixel in km²
+#Terra accounts for the curvature of the earth doing it this way
+cell_area <- cellSize(r, unit = "km")
+```
+
+```{r}
+pft_area <- r * cell_area
+```
+
+```{r}
+plot(pft_area)
+```
+
+###Check to make sure fraction is 0-1
+```{r}
+minmax(r)
+```
+
+```{r}
+output_file <- here(outputs_loc,"PFTMaps", "CLM5_EDFPFT.tif")
+
+writeRaster(pft_area, output_file, overwrite = TRUE)
+```
+
+
+
+```{r}
+total_area_km2 <- global(pft_area, fun = "sum", na.rm = TRUE)
+total_area_km2
+```
+
+
+
+
+
+
+
+
+
+##Cable-Pop
+
+```{r}
+CP_landCoverFrac <- ncdf4::nc_open(here(landcover_loc, "CABLE-POP_S0_landCoverFrac.nc"))
+CP_landCoverFrac
+```
+
+```{r}
+names(CP_landCoverFrac$var)
+```
+
+###Find the structire within our variable of interest. In this case it's longitude (360) × latitude (180) × PFT (10) × time (320)
+```{r}
+CP_landCoverFrac$var[["landCoverFrac"]]$dim
+```
+
+###Extract only PFT 1 (EBF)
+```{r}
+#Seems like the actual value for EBT is in PFT 2?? 
+var <- ncvar_get(CP_landCoverFrac, "landCoverFrac",
+                 start = c(1, 1, 2),
+                 count = c(-1, -1, 1))
+```
+
+###This PFT does not have time
+
+###Rasterize
+```{r}
+lon <- ncvar_get(CP_landCoverFrac, "longitude")
+lat <- ncvar_get(CP_landCoverFrac, "latitude")
+
+r <- rast(t(var))
+ext(r) <- c(min(lon), max(lon), min(lat), max(lat))
+crs(r) <- "EPSG:4326"
+
+# Fix orientation (very likely needed)
+r <- flip(r, direction = "vertical")
+
+plot(r)
+```
+
+
+###Convert to areas:
+```{r}
+# area of each pixel in km²
+#Terra accounts for the curvature of the earth doing it this way
+cell_area <- cellSize(r, unit = "km")
+```
+
+```{r}
+var_area <- r * cell_area
+```
+
+```{r}
+plot(var_area)
+```
+
+###Check to make sure fraction is 0-1
+```{r}
+minmax(r)
+```
+
+```{r}
+output_file <- here(outputs_loc,"PFTMaps", "Cable-Pop_EBFPFT.tif")
+
+writeRaster(var_area, output_file, overwrite = TRUE)
+```
+
+###Total area
+```{r}
+total_area_km2 <- global(var_area, fun = "sum", na.rm = TRUE)
+total_area_km2
+```
+
+
+
+
+
+
+
+
+
+##JSBACH
+
+```{r}
+JSB_landCoverFrac <- ncdf4::nc_open(here(landcover_loc, "JSBACH_S0_landCoverFrac.nc"))
+JSB_landCoverFrac
+```
+
+```{r}
+names(JSB_landCoverFrac$var)
+```
+
+###Find the structire within our variable of interest. In this case it's longitude (360) × latitude (180) × PFT (10) × time (320)
+```{r}
+JSB_landCoverFrac$var[["landCoverFrac"]]$dim
+```
+
+###Extract only PFT 1 (EBF)
+```{r}
+#Seems like the actual value for EBT is in PFT 2?? 
+var <- ncvar_get(JSB_landCoverFrac, "landCoverFrac",
+                 start = c(1, 1, 3),
+                 count = c(-1, -1, 1))
+```
+
+###This PFT does not have time
+
+###Rasterize
+```{r}
+lon <- ncvar_get(JSB_landCoverFrac, "longitude")
+lat <- ncvar_get(JSB_landCoverFrac, "latitude")
+
+r <- rast(t(var))
+ext(r) <- c(min(lon), max(lon), min(lat), max(lat))
+crs(r) <- "EPSG:4326"
+
+# Fix orientation (very likely needed)
+r <- flip(r, direction = "vertical")
+
+plot(r)
+```
+
+
+###Convert to areas:
+```{r}
+# area of each pixel in km²
+#Terra accounts for the curvature of the earth doing it this way
+cell_area <- cellSize(r, unit = "km")
+```
+
+```{r}
+var_area <- r * cell_area
+```
+
+```{r}
+plot(var_area)
+```
+
+###Check to make sure fraction is 0-1
+```{r}
+minmax(r)
+```
+
+```{r}
+output_file <- here(outputs_loc,"PFTMaps", "JSBach_EBFPFT.tif")
+
+writeRaster(var_area, output_file, overwrite = TRUE)
+```
+
+
+###Total area
+```{r}
+total_area_km2 <- global(var_area, fun = "sum", na.rm = TRUE)
+total_area_km2
+```
+
+
+
+
+
+
+
+##JULES
+
+```{r}
+JULES_landCoverFrac <- ncdf4::nc_open(here(landcover_loc, "JULES_S0_landCoverFrac.nc"))
+JULES_landCoverFrac
+```
+
+```{r}
+names(JULES_landCoverFrac$var)
+```
+
+###Find the structire within our variable of interest. In this case it's longitude (360) × latitude (180) × PFT (10) × time (320)
+```{r}
+JULES_landCoverFrac$var[["landCoverFrac"]]$dim
+```
+
+###Extract only PFT 1 (EBF)
+```{r}
+#Seems like the actual value for EBT is in PFT 2?? 
+var <- ncvar_get(JULES_landCoverFrac, "landCoverFrac",
+                 start = c(1, 1, 2, 1),
+                 count = c(-1, -1, 1, -1))
+```
+
+###Extract our dates of interest, 2000 to 2020
+```{r}
+time <- ncvar_get(JULES_landCoverFrac, "time")
+dates <- as.Date(time, origin = "1700-12-31")
+```
+
+```{r}
+time_idx <- which(year(dates) >= 2000 & year(dates) <= 2020)
+var_subset <- var[ , , time_idx]
+```
+
+###Average fraction values over time
+```{r}
+mean_pft <- apply(var_subset, c(1, 2), mean, na.rm = TRUE)
+```
+
+###Rasterize
+```{r}
+lon <- ncvar_get(JULES_landCoverFrac, "lon")
+lat <- ncvar_get(JULES_landCoverFrac, "lat")
+
+lon[lon > 180] <- lon[lon > 180] - 360
+
+# get ordering index
+ord <- order(lon)
+# reorder lon
+lon <- lon[ord]
+# reorder your data (IMPORTANT)
+mean_pft <- mean_pft[ord, ]
+
+r <- rast(t(mean_pft))
+ext(r) <- c(min(lon), max(lon), min(lat), max(lat))
+crs(r) <- "EPSG:4326"
+
+# Fix orientation (very likely needed)
+r <- flip(r, direction = "vertical")
+
+plot(r)
+```
+
+
+###Convert to areas:
+```{r}
+# area of each pixel in km²
+#Terra accounts for the curvature of the earth doing it this way
+cell_area <- cellSize(r, unit = "km")
+```
+
+```{r}
+var_area <- r * cell_area
+```
+
+```{r}
+plot(var_area)
+```
+
+###Check to make sure fraction is 0-1
+```{r}
+minmax(r)
+```
+
+```{r}
+output_file <- here(outputs_loc,"PFTMaps", "JULES_EBFPFT.tif")
+
+writeRaster(var_area, output_file, overwrite = TRUE)
+```
+
+
+###Total area
+```{r}
+total_area_km2 <- global(var_area, fun = "sum", na.rm = TRUE)
+total_area_km2
+```
+
+
+
+
+
+
+
+
+
+
+
+
+##LPJ-Guess
+
+```{r}
+LPJ_landCoverFrac <- ncdf4::nc_open(here(landcover_loc, "LPJ-GUESS_S0_landCoverFrac.nc"))
+LPJ_landCoverFrac
+```
+
+```{r}
+names(LPJ_landCoverFrac$var)
+```
+
+###Find the structire within our variable of interest. In this case it's longitude (360) × latitude (180) × PFT (10) × time (320)
+```{r}
+LPJ_landCoverFrac$var[["landCoverFrac"]]$dim
+```
+
+###Extract PFTs 8,9,10
+```{r}
+pft8 <- ncvar_get(LPJ_landCoverFrac, "landCoverFrac",
+                  start = c(8, 1, 1, 1),
+                  count = c(1, -1, -1, -1))
+
+pft9 <- ncvar_get(LPJ_landCoverFrac, "landCoverFrac",
+                  start = c(9, 1, 1, 1),
+                  count = c(1, -1, -1, -1))
+
+pft10 <- ncvar_get(LPJ_landCoverFrac, "landCoverFrac",
+                   start = c(10, 1, 1, 1),
+                   count = c(1, -1, -1, -1))
+
+pft_combined <- pft8 + pft9 + pft10
+```
+
+###Extract our dates of interest, 2000 to 2020
+```{r}
+time <- ncvar_get(LPJ_landCoverFrac, "time")
+dates <- as.Date(time, origin = "1700-12-31")
+```
+
+```{r}
+time_idx <- which(year(dates) >= 2000 & year(dates) <= 2020)
+pft_subset <- pft_combined[ , , time_idx]
+```
+
+###Average fraction values over time
+```{r}
+mean_pft <- apply(pft_subset, c(1, 2), mean, na.rm = TRUE)
+```
+
+###Rasterize
+```{r}
+lon <- ncvar_get(LPJ_landCoverFrac, "longitude")
+lat <- ncvar_get(LPJ_landCoverFrac, "latitude")
+
+lon[lon > 180] <- lon[lon > 180] - 360
+
+# get ordering index
+ord <- order(lon)
+# reorder lon
+lon <- lon[ord]
+# reorder your data (IMPORTANT)
+mean_pft <- mean_pft[ord, ]
+
+r <- rast(t(mean_pft))
+ext(r) <- c(min(lon), max(lon), min(lat), max(lat))
+crs(r) <- "EPSG:4326"
+
+# Fix orientation (very likely needed)
+r <- flip(r, direction = "vertical")
+
+plot(r)
+```
+
+
+###Convert to areas:
+```{r}
+# area of each pixel in km²
+#Terra accounts for the curvature of the earth doing it this way
+cell_area <- cellSize(r, unit = "km")
+```
+
+```{r}
+var_area <- r * cell_area
+```
+
+```{r}
+plot(var_area)
+```
+
+###Check to make sure fraction is 0-1
+```{r}
+minmax(r)
+```
+
+```{r}
+output_file <- here(outputs_loc,"PFTMaps", "LPJ-Guess_EBFPFT.tif")
+
+writeRaster(var_area, output_file, overwrite = TRUE)
+```
+
+
+###Total area
+```{r}
+total_area_km2 <- global(var_area, fun = "sum", na.rm = TRUE)
+total_area_km2
+```
+
+
+
+
+
+##LPX-Bern
+
+```{r}
+LPXB_landCoverFrac <- ncdf4::nc_open(here(landcover_loc, "LPX-Bern_S0_landCoverFrac.nc"))
+LPXB_landCoverFrac
+```
+
+
+
+```{r}
+names(LPXB_landCoverFrac$var)
+```
+
+###Find the structire within our variable of interest. In this case it's longitude (360) × latitude (180) × PFT (10) × time (320)
+```{r}
+LPXB_landCoverFrac$var[["landCoverFrac"]]$dim
+```
+
+###Extract PFTs and average time steps in one (files too big)
+```{r}
+time <- ncvar_get(LPXB_landCoverFrac, "time")
+dates <- as.Date(time, origin = "1700-12-31")
+
+time_idx <- which(lubridate::year(dates) >= 2000 & lubridate::year(dates) <= 2020)
+
+pft_mean <- 0
+
+for (p in c(1, 2, 13, 16, 17)) {
+  tmp <- ncvar_get(LPXB_landCoverFrac, "landCoverFrac",
+                   start = c(1, 1, p, min(time_idx)),
+                   count = c(-1, -1, 1, length(time_idx)))
+
+  tmp_mean <- apply(tmp, c(1, 2), mean, na.rm = TRUE)
+  
+  pft_mean <- pft_mean + tmp_mean
+  
+  rm(tmp, tmp_mean)
+  gc()
+}
+```
+
+###Rasterize
+```{r}
+lon <- ncvar_get(LPXB_landCoverFrac, "longitude")
+lat <- ncvar_get(LPXB_landCoverFrac, "latitude")
+
+lon[lon > 180] <- lon[lon > 180] - 360
+
+# get ordering index
+ord <- order(lon)
+# reorder lon
+lon <- lon[ord]
+# reorder your data (IMPORTANT)
+pft_mean <- pft_mean[ord, ]
+
+r <- rast(t(pft_mean))
+ext(r) <- c(min(lon), max(lon), min(lat), max(lat))
+crs(r) <- "EPSG:4326"
+
+# Fix orientation (very likely needed)
+r <- flip(r, direction = "vertical")
+
+plot(r)
+```
+
+
+###Convert to areas:
+```{r}
+# area of each pixel in km²
+#Terra accounts for the curvature of the earth doing it this way
+cell_area <- cellSize(r, unit = "km")
+```
+
+```{r}
+var_area <- r * cell_area
+```
+
+```{r}
+plot(var_area)
+```
+
+###Check to make sure fraction is 0-1
+```{r}
+minmax(r)
+```
+
+```{r}
+output_file <- here(outputs_loc,"PFTMaps", "LPX-Bern_EBFPFT.tif")
+
+writeRaster(var_area, output_file, overwrite = TRUE)
+```
+
+
+###Total area
+```{r}
+total_area_km2 <- global(var_area, fun = "sum", na.rm = TRUE)
+total_area_km2
+```
+
+
+
+
+
+
+##Orchidee
+
+```{r}
+ORC_landCoverFrac <- ncdf4::nc_open(here(landcover_loc, "ORCHIDEE_S0_landCoverFrac.nc"))
+ORC_landCoverFrac
+```
+
+
+
+```{r}
+names(ORC_landCoverFrac$var)
+```
+
+###Find the structire within our variable of interest. In this case it's longitude (360) × latitude (180) × PFT (10) × time (320)
+```{r}
+ORC_landCoverFrac$var[["landCoverFrac"]]$dim
+```
+
+###Extract PFTs and average time steps in one (files too big)
+```{r}
+time <- ncvar_get(ORC_landCoverFrac, "time")
+dates <- as.Date(time, origin = "1700-12-31")
+
+time_idx <- which(lubridate::year(dates) >= 2000 & lubridate::year(dates) <= 2020)
+
+pft_mean <- 0
+
+for (p in c(2,3)) {
+  tmp <- ncvar_get(ORC_landCoverFrac, "landCoverFrac",
+                   start = c(1, 1, p, min(time_idx)),
+                   count = c(-1, -1, 1, length(time_idx)))
+
+  tmp_mean <- apply(tmp, c(1, 2), mean, na.rm = TRUE)
+  
+  pft_mean <- pft_mean + tmp_mean
+  
+  rm(tmp, tmp_mean)
+  gc()
+}
+```
+
+###Rasterize
+```{r}
+lon <- ncvar_get(ORC_landCoverFrac, "longitude")
+lat <- ncvar_get(ORC_landCoverFrac, "latitude")
+
+lon[lon > 180] <- lon[lon > 180] - 360
+
+# get ordering index
+ord <- order(lon)
+# reorder lon
+lon <- lon[ord]
+# reorder your data (IMPORTANT)
+pft_mean <- pft_mean[ord, ]
+
+r <- rast(t(pft_mean))
+ext(r) <- c(min(lon), max(lon), min(lat), max(lat))
+crs(r) <- "EPSG:4326"
+
+# Fix orientation (very likely needed)
+r <- flip(r, direction = "vertical")
+
+plot(r)
+```
+
+
+###Convert to areas:
+```{r}
+# area of each pixel in km²
+#Terra accounts for the curvature of the earth doing it this way
+cell_area <- cellSize(r, unit = "km")
+```
+
+```{r}
+var_area <- r * cell_area
+```
+
+```{r}
+plot(var_area)
+```
+
+###Check to make sure fraction is 0-1
+```{r}
+minmax(r)
+```
+
+```{r}
+output_file <- here(outputs_loc,"PFTMaps", "Orchidee_EBFPFT.tif")
+
+writeRaster(var_area, output_file, overwrite = TRUE)
+```
+
+
+
+###Total area
+```{r}
+total_area_km2 <- global(var_area, fun = "sum", na.rm = TRUE)
+total_area_km2
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+##OCN
+
+```{r}
+OCN_landCoverFrac <- ncdf4::nc_open(here(landcover_loc, "OCN_S0_landCoverFrac.nc"))
+OCN_landCoverFrac
+```
+
+```{r}
+names(OCN_landCoverFrac$var)
+```
+
+###Find the structire within our variable of interest. In this case it's longitude (360) × latitude (180) × PFT (10) × time (320)
+```{r}
+OCN_landCoverFrac$var[["landCoverFrac"]]$dim
+```
+
+###Extract PFTs and average time steps in one (files too big) long, lat, pft, time
+```{r}
+time <- ncvar_get(OCN_landCoverFrac, "time")
+dates <- as.Date(time, origin = "1700-12-31")
+
+time_idx <- which(lubridate::year(dates) >= 2000 & lubridate::year(dates) <= 2020)
+
+pft_mean <- 0
+
+for (p in c(2,3)) {
+  tmp <- ncvar_get(OCN_landCoverFrac, "landCoverFrac",
+                   start = c(1, 1, p, min(time_idx)),
+                   count = c(-1, -1, 1, length(time_idx)))
+
+  tmp_mean <- apply(tmp, c(1, 2), mean, na.rm = TRUE)
+  
+  pft_mean <- pft_mean + tmp_mean
+  
+  rm(tmp, tmp_mean)
+  gc()
+}
+```
+
+###Rasterize
+```{r}
+lon <- ncvar_get(OCN_landCoverFrac, "longitude")
+lat <- ncvar_get(OCN_landCoverFrac, "latitude")
+
+lon[lon > 180] <- lon[lon > 180] - 360
+
+# get ordering index
+ord <- order(lon)
+# reorder lon
+lon <- lon[ord]
+# reorder your data (IMPORTANT)
+pft_mean <- pft_mean[ord, ]
+
+r <- rast(t(pft_mean))
+ext(r) <- c(min(lon), max(lon), min(lat), max(lat))
+crs(r) <- "EPSG:4326"
+
+# Fix orientation (very likely needed)
+r <- flip(r, direction = "vertical")
+
+plot(r)
+```
+
+
+###Convert to areas:
+```{r}
+# area of each pixel in km²
+#Terra accounts for the curvature of the earth doing it this way
+cell_area <- cellSize(r, unit = "km")
+```
+
+```{r}
+var_area <- r * cell_area
+```
+
+```{r}
+plot(var_area)
+```
+
+###Check to make sure fraction is 0-1
+```{r}
+minmax(r)
+```
+
+```{r}
+output_file <- here(outputs_loc,"PFTMaps", "OCN_EBFPFT.tif")
+
+writeRaster(var_area, output_file, overwrite = TRUE)
+```
+
+
+
+###Total area
+```{r}
+total_area_km2 <- global(var_area, fun = "sum", na.rm = TRUE)
+total_area_km2
+```
+
+
+
+
+
+
+
+
+
+##ISAM
+```{r}
+ISAM_landCoverFrac <- ncdf4::nc_open(here(landcover_loc, "ISAM_S0_landCoverFrac.nc"))
+ISAM_landCoverFrac
+```
+
+
+
+```{r}
+names(ISAM_landCoverFrac$var)
+```
+
+###Find the structire within our variable of interest. In this case it's longitude (360) × latitude (180) × PFT (10) × time (320)
+```{r}
+ISAM_landCoverFrac$var[["landCoverFrac"]]$dim
+```
+
+###Extract PFTs and average time steps in one (files too big) long, lat, pft, time
+###This model has an extra class for year and is only a value of one, plus the dates are by year
+```{r}
+time <- ncvar_get(ISAM_landCoverFrac, "time")
+time_idx <- which(time >= 2000 & time <= 2020)
+
+
+pft_mean <- 0
+
+for (p in c(1,2)) {
+  tmp <- ncvar_get(ISAM_landCoverFrac, "landCoverFrac",
+                   start = c(1, 1, p, 1, min(time_idx)),
+                   count = c(-1, -1, 1, 1, length(time_idx)))
+
+  tmp_mean <- apply(tmp, c(1, 2), mean, na.rm = TRUE)
+  
+  pft_mean <- pft_mean + tmp_mean
+  
+  rm(tmp, tmp_mean)
+  gc()
+}
+```
+
+
+
+
+###Rasterize
+```{r}
+lon <- ncvar_get(ISAM_landCoverFrac, "longitude")
+lat <- ncvar_get(ISAM_landCoverFrac, "latitude")
+
+lon[lon > 180] <- lon[lon > 180] - 360
+
+# get ordering index
+ord <- order(lon)
+# reorder lon
+lon <- lon[ord]
+# reorder your data (IMPORTANT)
+pft_mean <- pft_mean[ord, ]
+
+r <- rast(t(pft_mean))
+ext(r) <- c(min(lon), max(lon), min(lat), max(lat))
+crs(r) <- "EPSG:4326"
+
+# Fix orientation (very likely needed)
+r <- flip(r, direction = "vertical")
+
+plot(r)
+```
+
+
+###Convert to areas:
+```{r}
+# area of each pixel in km²
+#Terra accounts for the curvature of the earth doing it this way
+cell_area <- cellSize(r, unit = "km")
+```
+
+```{r}
+var_area <- r * cell_area
+```
+
+```{r}
+plot(var_area)
+```
+
+###Check to make sure fraction is 0-1
+```{r}
+minmax(r)
+```
+
+```{r}
+output_file <- here(outputs_loc,"PFTMaps", "ISAM_EBFPFT.tif")
+
+writeRaster(var_area, output_file, overwrite = TRUE)
+```
+
+
+
+###Total area
+```{r}
+total_area_km2 <- global(var_area, fun = "sum", na.rm = TRUE)
+total_area_km2
+```
+
+
+
+
+
+
+
+
+
