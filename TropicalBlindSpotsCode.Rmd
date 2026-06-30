@@ -750,49 +750,45 @@ p
 
 ##Checking colinearity of environemntal factors
 
+
+
+
+
+##Checking colinearity of environemntal factors
 ```{r}
-#remove NA values and test for colinearity 
- data[data==0] <- NA
- data
- 
- raster_data_noZeros<-data[complete.cases(data),]
-
-
-# We can visually look for correlations between variables:
-heatmap(abs(cor(raster_data_noZeros)), 
-        # Compute pearson correlation (note they are absolute values)
-        col = rev(heat.colors(6)), 
-        Colv = NA, Rowv = NA)
-legend("topleft", 
-       title = "Absolute Pearson R",
-       legend =  round(seq(0,1, length.out = 6),1),
-       y.intersp = 0.7, bty = "n",
-       fill = rev(heat.colors(6)))
+df <- read.csv(here(pca_loc,'RandPoints_Ext.csv'), header= TRUE)
+df$Slope <- as.numeric(df$Slope)
+df <- df %>% dplyr::select(-c(IGBP))
 ```
 
 ```{r}
- #raster_data[raster_data==0] <- NA
- #raster_data
- 
-# raster_data_noZeros<-raster_data[complete.cases(raster_data),]
+str(raster_data_noZeros)
+sapply(raster_data_noZeros, function(x) sd(x, na.rm = TRUE))
+```
+```{r}
+corr <- cor(raster_data_noZeros)
 
-# Prepare correlation matrix
-corr <- abs(cor(raster_data_noZeros))
+diag(corr)
+```
 
-# Set layout: 1 row, 2 columns (plot + legend)
-layout(matrix(c(1, 2), nrow = 1), widths = c(4, 1))
 
-# Plot heatmap
-heatmap(corr, col = rev(heat.colors(6)), Colv = NA, Rowv = NA)
+```{r}
+library(corrplot)
 
-# Plot empty area and draw legend
-par(mar = c(5, 1, 4, 4))
-plot.new()
-legend("center", 
-       title = "Abs Pearson R",
-       legend = round(seq(0, 1, length.out = 6), 1),
-       fill = rev(heat.colors(6)), 
-       bty = "n")
+corr <- cor(raster_data_noZeros)
+
+
+png(here(figure_loc, "correlation_matrix.png"),
+    width = 2000,
+    height = 2000,
+    res = 300)
+
+corrplot(corr,
+         method = "color",
+         type = "upper",
+         col = rev(heat.colors(100)))
+
+dev.off()
 ```
 
 
